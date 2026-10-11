@@ -41,10 +41,9 @@ $(UNSTRIP): $(SRC) bpf/*.h $(VMLINUX)
 $(OBJ): $(UNSTRIP)
 	$(BPFTOOL) gen object $@ $<
 
-# Attach to every currently plugged-in matching HID device (interface 1 of
-# the receiver 093a:821d and/or the cabled mouse 093a:821a). Not persistent.
+# Attach to the plugged-in receiver (interface 1 of 093a:821d). Not persistent.
 test: $(OBJ)
-	@for dev in /sys/bus/hid/devices/0003:093A:821D.* /sys/bus/hid/devices/0003:093A:821A.*; do \
+	@for dev in /sys/bus/hid/devices/0003:093A:821D.*; do \
 		[ -e "$$dev" ] || continue; \
 		echo "attaching to $$dev"; \
 		sudo $(UDEV_HID_BPF) add "$$dev" "$(abspath $(OBJ))" || true; \
@@ -52,7 +51,7 @@ test: $(OBJ)
 	@sleep 1; ls -d /sys/class/power_supply/hid-*battery* 2>/dev/null || echo "no HID battery yet"
 
 install: $(OBJ)
-	sudo $(UDEV_HID_BPF) install "$(abspath $(OBJ))"
+	sudo $(UDEV_HID_BPF) install --force "$(abspath $(OBJ))"
 	sudo udevadm control --reload
 	@echo "Re-plug the receiver (or run: sudo udevadm trigger -c add -s hid) to attach."
 

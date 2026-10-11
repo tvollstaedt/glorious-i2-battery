@@ -86,7 +86,7 @@
 
 #define VID_GLORIOUS_PIXART	0x093A
 #define PID_MODEL_I2_RECEIVER	0x821D	/* 2.4 GHz dongle */
-#define PID_MODEL_I2_USB	0x821A	/* mouse on its cable */
+#define PID_MODEL_I2_USB	0x821A	/* mouse on its cable, not matched */
 
 #define ORIG_RDESC_SIZE		180
 #define VENDOR_COLLECTION_OFF	156
@@ -94,9 +94,13 @@
 #define BATTERY_REPORT_ID	0x06
 #define BATTERY_MARKER		0xFB
 
+/*
+ * Receiver only.  The cabled mouse (PID_MODEL_I2_USB) has the identical
+ * descriptor but never sends battery frames, so a power_supply on it would
+ * sit at 0 % forever and show up as a second device in the battery applet.
+ */
 HID_BPF_CONFIG(
-	HID_DEVICE(BUS_USB, HID_GROUP_GENERIC, VID_GLORIOUS_PIXART, PID_MODEL_I2_RECEIVER),
-	HID_DEVICE(BUS_USB, HID_GROUP_GENERIC, VID_GLORIOUS_PIXART, PID_MODEL_I2_USB)
+	HID_DEVICE(BUS_USB, HID_GROUP_GENERIC, VID_GLORIOUS_PIXART, PID_MODEL_I2_RECEIVER)
 );
 
 /* Replacement for the vendor collection at offset 156 */
@@ -180,10 +184,9 @@ SEC("syscall")
 int probe(struct hid_bpf_probe_args *ctx)
 {
 	/*
-	 * Both interfaces of the receiver and of the cabled mouse match the
-	 * VID/PID.  Interface 0 (keyboard emulation, 65 bytes) must be left
-	 * alone; only interface 1 with the 180-byte descriptor carries the
-	 * vendor collection.
+	 * Both interfaces of the receiver match the VID/PID.  Interface 0
+	 * (keyboard emulation, 65 bytes) must be left alone; only interface 1
+	 * with the 180-byte descriptor carries the vendor collection.
 	 */
 	ctx->retval = ctx->rdesc_size != ORIG_RDESC_SIZE;
 	if (ctx->retval)

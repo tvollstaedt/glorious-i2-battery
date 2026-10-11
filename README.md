@@ -54,8 +54,8 @@ Facts that shape the design:
 
 ## How the driver works
 
-`bpf/0010-Glorious__Model-I2-Wireless.bpf.c` attaches to interface 1 of both
-PIDs (the probe checks for the 180-byte descriptor) and does two things:
+`bpf/0010-Glorious__Model-I2-Wireless.bpf.c` attaches to interface 1 of the
+receiver (the probe checks for the 180-byte descriptor) and does two things:
 
 1. **Report descriptor fixup.** The vendor collection is rewritten so that
    byte 2 of report 6 is declared as *Generic Device Controls / Battery
@@ -137,6 +137,8 @@ button, profile and out-of-range frames are ignored.
   (there is a `TODO` for exactly this in `up-device-supply.c`) rather than
   a driver change.
 - **Stale while cabled.** See above: no frames while the cable is connected.
+  The cabled mouse (`093a:821a`) is deliberately not matched; it would only
+  add a second, permanently empty battery entry.
 - Bluetooth (`093a:821b`) is not handled; it uses a different report layout.
 
 ## Command-line battery readout (Linux and macOS)
