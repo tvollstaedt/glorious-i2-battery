@@ -1,0 +1,6 @@
+# build output (vmlinux.h is generated from the running kernel's BTF)
+build/
+*.bpf.o
+*.o
+__pycache__/
+*.pyc

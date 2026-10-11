@@ -1,0 +1,11 @@
+# SPDX-License-Identifier: GPL-2.0-only
+# Glorious Model I 2 Wireless: let the logged-in user open the mouse's hidraw nodes.
+# Needed only for tools/gi2-battery.py and configuration tools; the HID-BPF
+# driver itself does not need it.
+#
+# Install: sudo cp udev/72-glorious-model-i2.rules /etc/udev/rules.d/ \
+#          && sudo udevadm control --reload && sudo udevadm trigger
+#
+# 093a:821d = 2.4 GHz receiver, 093a:821a = mouse on its USB cable.
+KERNEL=="hidraw*", SUBSYSTEM=="hidraw", ATTRS{idVendor}=="093a", ATTRS{idProduct}=="821d", TAG+="uaccess"
+KERNEL=="hidraw*", SUBSYSTEM=="hidraw", ATTRS{idVendor}=="093a", ATTRS{idProduct}=="821a", TAG+="uaccess"
