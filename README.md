@@ -4,7 +4,8 @@ Native battery reporting for the **Glorious Model I 2 Wireless** mouse on Linux,
 implemented as a HID-BPF driver. Once attached, the kernel itself creates a
 `power_supply` for the mouse, UPower picks it up, and the battery shows up in
 the KDE Plasma / GNOME battery applets like any Logitech or Bluetooth mouse.
-No kernel module, no DKMS, no daemon.
+No kernel module, no DKMS, no daemon. A small udev-triggered helper adds the
+"charging" state while the cable is plugged in (see below).
 
 Also included:
 
@@ -70,15 +71,50 @@ receiver (the probe checks for the 180-byte descriptor) and does two things:
    battery frame. Otherwise the trailing zero frame would report 0 % and a
    profile-change frame would report 1-3 %.
 
+3. **Charging bit.** Byte 4 of report 6 is padding on the wire. The descriptor
+   declares its bit 0 as *Battery System / Charging*, which `hid-input` turns
+   into the `status` of the `power_supply` (`Charging` / `Discharging`). The
+   mouse itself never sets it; `hid_device_event` only lets it through on
+   battery frames and clears it everywhere else.
+
 Nothing is ever written to the mouse. The normal mouse, consumer-control and
 keyboard interfaces are untouched; `hidraw` keeps working for configuration
 tools.
+
+## Charging state while the cable is plugged in
+
+With the cable plugged in the mouse sends no frames at all, so the kernel
+would keep the last wireless reading with `Discharging`. The cable itself is
+the only signal there is (the mouse shows up as `093a:821a`), and it is enough
+to know the mouse is being charged:
+
+1. `udev/73-glorious-model-i2-charging.rules` fires when `093a:821a` appears or
+   disappears, and when the receiver is plugged in.
+2. It runs `tools/gi2-charging-sync` (installed to `/usr/local/bin`) one second
+   later. The helper checks whether the cable is present, takes the last known
+   level, and injects a synthetic `06 FB <level> 00 <charging> 00 00 00` frame
+   into the receiver's HID device using `bpf/gi2-inject.bpf.c`
+   (`hid_bpf_input_report` from a syscall program). The kernel then updates the
+   `power_supply`, UPower and the desktop show "charging".
+3. When the cable is pulled the mouse goes wireless again, sends a real frame
+   (the level is current again) and the helper clears the charging bit.
+
+The level shown while charging is the last wireless reading; it does not grow
+while charging, there is no data source for it. The last known level is also
+kept in `/var/lib/gi2-battery/last-level` so a reboot with the cable plugged
+in still reports `Charging` with a valid level. If no level was ever seen, the
+helper leaves the battery alone (the kernel only publishes a status once it
+has a valid level). "Fully charged" cannot be told apart from "charging".
+
+Check: `gi2-charging-sync` logs to the journal (`journalctl -t gi2-charging`),
+and `cat /sys/class/power_supply/hid-*-battery-6/status` shows the state.
 
 ## Requirements
 
 - Kernel with `CONFIG_HID_BPF=y` and BTF (`/sys/kernel/btf/vmlinux`), 6.11 or
   newer for the struct_ops API. CachyOS/Arch kernels qualify.
-- `clang`, `bpftool` (Arch package `bpf`), `make`.
+- `clang`, `bpftool` (Arch package `bpf`), `make`, `python3` (for the charging
+  helper, stdlib only; x86_64, the `bpf()` syscall number is hard-coded).
 - [`udev-hid-bpf`](https://gitlab.freedesktop.org/libevdev/udev-hid-bpf)
   as the loader (Arch package `udev-hid-bpf`).
 - For the Python tool: `python-hidapi` and the udev rule in `udev/` so your
@@ -87,9 +123,9 @@ tools.
 ## Build, test, install
 
 ```bash
-make                 # -> build/0010-Glorious__Model-I2-Wireless.bpf.o
+make                 # -> build/0010-Glorious__Model-I2-Wireless.bpf.o, build/gi2-inject.bpf.o
 make test            # attach to the plugged-in receiver/mouse (not persistent)
-make install         # copy to /etc/udev-hid-bpf/ + udev rule, loads on every plug
+make install         # driver + charging helper + udev rules, loads on every plug
 ```
 
 `make install` runs `udev-hid-bpf install`, which copies the object to
@@ -136,9 +172,10 @@ button, profile and out-of-range frames are ignored.
   "Glorious Model I 2 Wireless". Changing that needs a UPower heuristic
   (there is a `TODO` for exactly this in `up-device-supply.c`) rather than
   a driver change.
-- **Stale while cabled.** See above: no frames while the cable is connected.
-  The cabled mouse (`093a:821a`) is deliberately not matched; it would only
-  add a second, permanently empty battery entry.
+- **Level frozen while cabled.** No frames while the cable is connected, so the
+  percentage stays at the last wireless reading (the state shows `Charging`,
+  see above). The cabled mouse (`093a:821a`) is deliberately not matched; it
+  would only add a second, permanently empty battery entry.
 - Bluetooth (`093a:821b`) is not handled; it uses a different report layout.
 
 ## Command-line battery readout (Linux and macOS)
@@ -174,10 +211,13 @@ Its protocol notes (`PROTOCOL.md`) match what CORE 2.1.21 does; its
 
 ```
 bpf/0010-Glorious__Model-I2-Wireless.bpf.c   the driver
+bpf/gi2-inject.bpf.c                         syscall program: injects one frame
+tools/gi2-charging-sync                      udev helper: cable -> charging state
 bpf/hid_bpf*.h, hid_report*.h, hid_usages.h  headers from udev-hid-bpf (GPL-2.0)
 tools/gi2-battery.py                         hidapi reader, Linux + macOS
 tools/uhid-test.py                           driver self-test
 udev/72-glorious-model-i2.rules              hidraw access for the user
+udev/73-glorious-model-i2-charging.rules     runs the helper on cable plug/unplug
 Makefile
 ```
 

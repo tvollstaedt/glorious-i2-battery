@@ -137,6 +137,21 @@ def main():
         check("bogus 150% (ignored)", bytes([6, 0xFB, 150, 0, 0, 0, 0, 0]), 73)
         check("battery frame 100%", bytes([6, 0xFB, 100, 0, 0, 0, 0, 0]), 100)
         check("battery frame 5%", bytes([6, 0xFB, 5, 1, 0, 0, 0, 0]), 5)
+
+        def check_status(label, frame, expect):
+            nonlocal ok
+            uhid_input(fd, frame)
+            time.sleep(0.2)
+            got = read_attr(psy, "status")
+            flag = "ok " if got == expect else "BAD"
+            if flag == "BAD":
+                ok = False
+            print(f"  {flag} {label:<34} {frame[:5].hex(' ')} -> status {got} (expected {expect})")
+
+        check_status("battery frame, charging bit", bytes([6, 0xFB, 5, 0, 1, 0, 0, 0]), "Charging")
+        check_status("button frame with bit 0 set", bytes([6, 0xF9, 0x80, 3, 1, 0, 0, 0]), "Charging")
+        check_status("real frame ends charging", bytes([6, 0xFB, 5, 1, 0, 0, 0, 0]), "Discharging")
+        check_status("button frame never charges", bytes([6, 0xF9, 0x80, 3, 1, 0, 0, 0]), "Discharging")
         uhid_input(fd, bytes([1, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0]))  # mouse motion, unrelated
         time.sleep(0.2)
         print("  status after frames:", read_attr(psy, "status"), "model:", read_attr(psy, "model_name"))

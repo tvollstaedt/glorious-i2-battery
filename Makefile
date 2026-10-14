@@ -4,7 +4,8 @@
 #
 #   make            build build/0010-Glorious__Model-I2-Wireless.bpf.o
 #   make test       attach to the plugged-in receiver/mouse without installing
-#   make install    install via udev-hid-bpf (persistent, needs sudo)
+#   make install    install via udev-hid-bpf (persistent, needs sudo); also
+#                   installs the charging helper (gi2-inject, udev rule)
 #   make uninstall
 #
 # Requirements: clang, bpftool (package "bpf" on Arch), udev-hid-bpf
@@ -18,6 +19,13 @@ OBJ      := $(BUILD)/$(NAME).bpf.o
 UNSTRIP  := $(BUILD)/$(NAME).unstripped.bpf.o
 VMLINUX  := $(BUILD)/vmlinux.h
 
+INJ_SRC  := bpf/gi2-inject.bpf.c
+INJ_OBJ  := $(BUILD)/gi2-inject.bpf.o
+INJ_UNSTRIP := $(BUILD)/gi2-inject.unstripped.bpf.o
+LIBDIR   := /usr/local/lib/gi2-battery
+SYNC_BIN := /usr/local/bin/gi2-charging-sync
+CHG_RULE := /etc/udev/rules.d/73-glorious-model-i2-charging.rules
+
 CLANG    ?= clang
 BPFTOOL  ?= bpftool
 UDEV_HID_BPF ?= udev-hid-bpf
@@ -27,7 +35,7 @@ CFLAGS   := -std=gnu11 -fno-stack-protector -O2 -target bpf -g -c \
             -fms-extensions -Wno-microsoft-anon-tag \
             -D__$(ARCH)__ -I$(BUILD) -Ibpf
 
-all: $(OBJ)
+all: $(OBJ) $(INJ_OBJ)
 
 $(BUILD):
 	mkdir -p $@
@@ -41,6 +49,12 @@ $(UNSTRIP): $(SRC) bpf/*.h $(VMLINUX)
 $(OBJ): $(UNSTRIP)
 	$(BPFTOOL) gen object $@ $<
 
+$(INJ_UNSTRIP): $(INJ_SRC) bpf/*.h $(VMLINUX)
+	$(CLANG) $(CFLAGS) -o $@ $<
+
+$(INJ_OBJ): $(INJ_UNSTRIP)
+	$(BPFTOOL) gen object $@ $<
+
 # Attach to the plugged-in receiver (interface 1 of 093a:821d). Not persistent.
 test: $(OBJ)
 	@for dev in /sys/bus/hid/devices/0003:093A:821D.*; do \
@@ -50,13 +64,18 @@ test: $(OBJ)
 	done
 	@sleep 1; ls -d /sys/class/power_supply/hid-*battery* 2>/dev/null || echo "no HID battery yet"
 
-install: $(OBJ)
+install: $(OBJ) $(INJ_OBJ)
 	sudo $(UDEV_HID_BPF) install --force "$(abspath $(OBJ))"
+	sudo install -d $(LIBDIR)
+	sudo install -m 644 $(INJ_OBJ) $(LIBDIR)/gi2-inject.bpf.o
+	sudo install -m 755 tools/gi2-charging-sync $(SYNC_BIN)
+	sudo install -m 644 udev/73-glorious-model-i2-charging.rules $(CHG_RULE)
 	sudo udevadm control --reload
 	@echo "Re-plug the receiver (or run: sudo udevadm trigger -c add -s hid) to attach."
 
 uninstall:
 	-sudo rm -f /etc/udev-hid-bpf/$(NAME).bpf.o /etc/udev/rules.d/*$(NAME)*.rules
+	-sudo rm -rf $(LIBDIR) $(SYNC_BIN) $(CHG_RULE)
 	sudo udevadm control --reload
 
 clean:

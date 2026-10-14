@@ -128,13 +128,32 @@ static const __u8 battery_collection[] = {
 	0x95, 0x01,		//   Report Count (1)
 	0x81, 0x02,		//   Input (Data,Var,Abs)
 	0xc0,			//  End Collection
-	/* bytes 3..7: toggle bit and padding, kept as vendor data */
+	/* byte 3: toggle, kept as vendor data */
 	0x06, 0x00, 0xff,	//  Usage Page (Vendor Defined Page 1)
 	0x09, 0x30,		//  Usage (Vendor Usage 0x30)
 	0x15, 0x00,		//  Logical Minimum (0)
 	0x26, 0xff, 0x00,	//  Logical Maximum (255)
 	0x75, 0x08,		//  Report Size (8)
-	0x95, 0x05,		//  Report Count (5)
+	0x95, 0x01,		//  Report Count (1)
+	0x81, 0x02,		//  Input (Data,Var,Abs)
+	/* byte 4 bit 0: charging, never sent by the mouse (see gi2-inject) */
+	0x05, 0x85,		//  Usage Page (Battery System)
+	0x09, 0x44,		//  Usage (Charging)
+	0x15, 0x00,		//  Logical Minimum (0)
+	0x25, 0x01,		//  Logical Maximum (1)
+	0x75, 0x01,		//  Report Size (1)
+	0x95, 0x01,		//  Report Count (1)
+	0x81, 0x02,		//  Input (Data,Var,Abs)
+	0x75, 0x07,		//  Report Size (7)
+	0x95, 0x01,		//  Report Count (1)
+	0x81, 0x03,		//  Input (Const,Var,Abs)
+	/* bytes 5..7: padding, kept as vendor data */
+	0x06, 0x00, 0xff,	//  Usage Page (Vendor Defined Page 1)
+	0x09, 0x30,		//  Usage (Vendor Usage 0x30)
+	0x15, 0x00,		//  Logical Minimum (0)
+	0x26, 0xff, 0x00,	//  Logical Maximum (255)
+	0x75, 0x08,		//  Report Size (8)
+	0x95, 0x03,		//  Report Count (3)
 	0x81, 0x02,		//  Input (Data,Var,Abs)
 	0xc0,			// End Collection
 };
@@ -152,6 +171,8 @@ int BPF_PROG(hid_rdesc_fixup_glorious_i2, struct hid_bpf_ctx *hctx)
 
 	return VENDOR_COLLECTION_OFF + sizeof(battery_collection);
 }
+
+static __u8 charging;
 
 SEC(HID_BPF_DEVICE_EVENT)
 int BPF_PROG(hid_device_event_glorious_i2, struct hid_bpf_ctx *hctx)
@@ -171,6 +192,17 @@ int BPF_PROG(hid_device_event_glorious_i2, struct hid_bpf_ctx *hctx)
 	 */
 	if (data[1] != BATTERY_MARKER || data[2] > 100)
 		data[2] = 0xff;
+
+	/*
+	 * Byte 4 is padding on the wire, so a real battery frame always ends
+	 * "charging".  Only battery frames injected by gi2-inject (cable
+	 * plugged in) carry the bit.  hid-input applies the field of every
+	 * report-6 frame, so all other kinds repeat the current state instead
+	 * of resetting it.
+	 */
+	if (data[1] == BATTERY_MARKER)
+		charging = data[4] & 0x01;
+	data[4] = charging;
 
 	return 0;
 }

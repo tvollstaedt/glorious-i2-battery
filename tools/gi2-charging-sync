@@ -1,0 +1,151 @@
+#!/usr/bin/python3 -I
+# SPDX-License-Identifier: GPL-2.0-only
+# Copyright (c) 2026 Thomas Vollstädt
+"""Tell the receiver's battery whether the Glorious Model I 2 is charging.
+
+The mouse sends no battery frames while its cable (093a:821a) is plugged in,
+so the kernel keeps the last wireless reading and "Discharging".  This helper
+checks whether the cable is present and injects one synthetic report 6 frame
+into the receiver's HID device (bpf/gi2-inject.bpf.c): the last known level
+plus the charging bit the driver added.  Runs as root from udev
+(73-glorious-model-i2-charging.rules); idempotent.
+
+    gi2-charging-sync              sync with the current state
+    gi2-charging-sync --level 80   override the level (e.g. after a bogus one)
+"""
+
+import ctypes
+import fcntl
+import glob
+import os
+import struct
+import subprocess
+import sys
+import syslog
+
+LIBDIR = os.environ.get("GI2_LIBDIR", "/usr/local/lib/gi2-battery")
+STATE = "/var/lib/gi2-battery/last-level"
+SYS_BPF = 321  # x86_64
+BPF_OBJ_GET = 7
+BPF_PROG_TEST_RUN = 10
+
+
+def log(msg):
+    syslog.syslog(msg)
+
+
+def read(path, default=""):
+    try:
+        with open(path) as f:
+            return f.read().strip()
+    except OSError:
+        return default
+
+
+def cable_present():
+    return any(
+        read(d + "/idVendor") == "093a" and read(d + "/idProduct") == "821a"
+        for d in glob.glob("/sys/bus/usb/devices/*")
+    )
+
+
+def receiver_supply():
+    for s in sorted(glob.glob("/sys/class/power_supply/hid-0003:093A:821D.*-battery-*")):
+        if "/virtual/misc/uhid/" in os.path.realpath(s):
+            continue  # tools/uhid-test.py creates a look-alike device
+        name = os.path.basename(s)
+        hid_id = int(name.split("821D.")[1].split("-")[0], 16)
+        return s, hid_id
+    return None, None
+
+
+def last_level(supply):
+    """Level from the kernel if it saw a real frame, else the saved one."""
+    if read(supply + "/status") != "Unknown":
+        level = int(read(supply + "/capacity", "-1"))
+        if 0 <= level <= 100:
+            os.makedirs(os.path.dirname(STATE), exist_ok=True)
+            with open(STATE, "w") as f:
+                f.write("%d\n" % level)
+            return level
+    saved = read(STATE)
+    if saved.isdigit() and int(saved) <= 100:
+        return int(saved)
+    return None
+
+
+def bpf(cmd, attr):
+    libc = ctypes.CDLL(None, use_errno=True)
+    buf = ctypes.create_string_buffer(attr, len(attr))
+    ret = libc.syscall(SYS_BPF, cmd, buf, len(attr))
+    return ret, ctypes.get_errno(), buf.raw
+
+
+def inject(obj, hid_id, report):
+    pin = "/sys/fs/bpf/gi2-inject-%d" % os.getpid()
+    load = subprocess.run(["bpftool", "prog", "load", obj, pin],
+                          capture_output=True, text=True)
+    if load.returncode:
+        raise RuntimeError("load: " + load.stderr.strip())
+    try:
+        path = ctypes.create_string_buffer(pin.encode())
+        fd, err, _ = bpf(BPF_OBJ_GET,
+                         struct.pack("QII", ctypes.addressof(path), 0, 0) + bytes(16))
+        if fd < 0:
+            raise RuntimeError("obj_get: " + os.strerror(err))
+        try:
+            # struct inject_args { u32 hid_id; u8 report[8]; }
+            ctx = struct.pack("<I8s", hid_id, bytes(report))
+            cbuf = ctypes.create_string_buffer(ctx, len(ctx))
+            attr = struct.pack("IIIIQQIIIIQQIIII", fd, 0, 0, 0, 0, 0, 0, 0,
+                               len(ctx), 0, ctypes.addressof(cbuf), 0, 0, 0, 0, 0)
+            ret, err, raw = bpf(BPF_PROG_TEST_RUN, attr)
+            if ret < 0:
+                raise RuntimeError("test_run: " + os.strerror(err))
+            retval = ctypes.c_int(struct.unpack_from("I", raw, 4)[0]).value
+            if retval:
+                raise RuntimeError("inject returned %d" % retval)
+        finally:
+            os.close(fd)
+    finally:
+        try:
+            os.unlink(pin)
+        except OSError:
+            pass
+
+
+def main():
+    syslog.openlog("gi2-charging")
+    lock = open("/run/gi2-charging.lock", "w")
+    fcntl.flock(lock, fcntl.LOCK_EX)
+
+    supply, hid_id = receiver_supply()
+    if supply is None:
+        return 0  # receiver not plugged in or driver not attached
+
+    cable = cable_present()
+    if len(sys.argv) == 3 and sys.argv[1] == "--level" and sys.argv[2].isdigit() \
+            and int(sys.argv[2]) <= 100:
+        level = int(sys.argv[2])
+        os.makedirs(os.path.dirname(STATE), exist_ok=True)
+        with open(STATE, "w") as f:
+            f.write("%d\n" % level)
+    else:
+        level = last_level(supply)
+    if level is None:
+        # The kernel only reports a charge state once it has a valid level.
+        log("no level known yet, leaving the battery alone")
+        return 0
+
+    report = [0x06, 0xFB, level, 0x00, 1 if cable else 0, 0x00, 0x00, 0x00]
+    try:
+        inject(os.path.join(LIBDIR, "gi2-inject.bpf.o"), hid_id, report)
+    except RuntimeError as exc:
+        log("inject failed: %s" % exc)
+        return 1
+    log("hid %d: cable=%s, level=%d" % (hid_id, "yes" if cable else "no", level))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

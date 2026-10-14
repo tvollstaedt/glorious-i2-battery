@@ -1,0 +1,11 @@
+# Tell the receiver's battery whether the Glorious Model I 2 sits on its
+# charging cable (093a:821a).  The mouse sends no battery frames over the
+# cable, so gi2-charging-sync injects one when the cable comes or goes.
+# Install: make install
+
+# Cable plugged in or pulled out.  PRODUCT is set on remove events, too.
+ACTION=="add|remove", SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ENV{PRODUCT}=="93a/821a/*", RUN+="/usr/bin/systemd-run --no-block --on-active=1 /usr/local/bin/gi2-charging-sync"
+
+# Receiver appears while the cable is already plugged in (boot, re-plug).
+# The delay lets the HID-BPF driver attach first.
+ACTION=="add", SUBSYSTEM=="hid", ENV{HID_ID}=="0003:0000093A:0000821D", RUN+="/usr/bin/systemd-run --no-block --on-active=3 /usr/local/bin/gi2-charging-sync"
